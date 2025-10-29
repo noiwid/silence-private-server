@@ -32,7 +32,7 @@ If you like this project you can support me with :coffee: , with **GitHub Sponso
 ### Tested on Silence Scooters
 - [x] Silence S01 Connected
 - [x] Silence S01+
-- [ ] Testing ongoin on **Seat Mò**
+- [X] Seat Mò
 
 ## How It Works
 **SilencePrivateServer** acts as a replacement for the Silence/Seat Cloud Server.\
@@ -161,6 +161,12 @@ To send a command, simply publish a message, with an empty payload, to the appro
 For example, to turn on the scooter, you would publish `TURN_ON_SCOOTER` to topic `MyScooter/123456789/command`.
 
 ## Home Assistant Integration
+
+> **❗ NEWS 29 October 2025 ❗**
+> 
+> If you want a **very well done** all in one integration you can refer to [this breautiful project](https://github.com/noiwid/silence-scooter-homeassistant)
+>
+ 
 Once you have everything set up and see the data on MQTT the integration with **Home Assistant** is quite simple if you are familiar with Home Assistant. \
 In the file `**packages/scooter_package.yaml**` I leave you an example of configuration for data integration. \
 You will obviously have to modify **YOUR_SCOOTER_IMEI** with your **IMEI** obtained in the previous steps.
