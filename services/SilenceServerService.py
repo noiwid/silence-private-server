@@ -162,6 +162,10 @@ class SilenceServerService(threading.Thread):
                         scooterSocket.send("$RCAN,186".encode())
                         scooterSocket.send("$RCAN,187".encode())
                         scooterSocket.send("$RCAN,188".encode())
+                        # Extended CAN: ECU mode/switches, range, BMS flags
+                        scooterSocket.send("$RCAN,182".encode())
+                        scooterSocket.send("$RCAN,280".encode())
+                        scooterSocket.send("$RCAN,300".encode())
                         last_BMS_pooling_time = time.time()
 
                     if self.keepAliveInterval > 0 and time.time() - last_keep_alive_sent > self.keepAliveInterval:

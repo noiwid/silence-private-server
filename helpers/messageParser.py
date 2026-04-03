@@ -60,11 +60,12 @@ class MessageParser:
                 log.exception(f"Exception in handling message protocol Z {data}")
 
     def parse_message_from_scooter_protocol_astra(self, data):
-        
+
         if len(data) > 0:
             log.debug(f"Parse received message protocol astra from scooter: {data}")
             try:
                 data = data.decode()
+                self._parse_extended_can(data)
                 for parameter in self.RCAN_message_configuration:
                     if data[:len(self.RCAN_message_configuration[parameter]["header"])] == self.RCAN_message_configuration[parameter]["header"]:
                         byte_pos = self.RCAN_message_configuration[parameter]["message_byte_pos"]
@@ -77,6 +78,48 @@ class MessageParser:
 
             except Exception:
                 log.exception(f"Exception in handling message protocol astra {data}")
+
+    def _parse_extended_can(self, data):
+        """Parse extended CAN data from $RCAN responses (0x182, 0x280, 0x300)."""
+        if not data.startswith("$RCAN,"):
+            return
+
+        parts = data.strip().split(",")
+        if len(parts) < 3:
+            return
+
+        rcan_id = parts[1]
+
+        try:
+            # 0x280 - ECU: Drive mode + switches
+            if rcan_id == "280" and len(parts) >= 5:
+                byte0 = int(parts[3], 16)
+                byte1 = int(parts[4], 16)
+
+                # Drive ready (bit 0)
+                self.parameters["driveReady"]["value"] = int(byte0 & 0x01 != 0)
+
+                # Sidestand (bit 3)
+                self.parameters["sidestandDown"]["value"] = int(byte0 & 0x08 != 0)
+
+                # Drive mode (bits 4-5)
+                mode_bits = (byte0 >> 4) & 0x03
+                mode_map = {0: "OFF", 1: "ECO", 2: "SPORT", 3: "CITY"}
+                self.parameters["driveMode"]["value"] = mode_map.get(mode_bits, "UNKNOWN")
+
+                # Warning lights (byte1 bit 0)
+                self.parameters["warningLights"]["value"] = int(byte1 & 0x01 != 0)
+
+            # 0x300 - Range by current drive mode
+            elif rcan_id == "300" and len(parts) >= 5:
+                self.parameters["rangeByMode"]["value"] = int(parts[4], 16)
+
+            # 0x182 - BMS flags (CC/CV/BAL/charging)
+            elif rcan_id == "182" and len(parts) >= 4:
+                self.parameters["bmsFlags"]["value"] = int(parts[3], 16)
+
+        except (ValueError, IndexError, KeyError) as e:
+            log.debug("Error parsing extended CAN %s: %s", rcan_id, e)
 
     def get_scooter_off_status(self):
         return self.scooter_off

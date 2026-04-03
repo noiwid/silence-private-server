@@ -142,5 +142,29 @@
     "Cell14Voltage": {
         "value": null,
         "MQTT_topic": "Cell14Voltage"
+    },
+    "driveMode": {
+        "value": null,
+        "MQTT_topic": "driveMode"
+    },
+    "driveReady": {
+        "value": null,
+        "MQTT_topic": "driveReady"
+    },
+    "sidestandDown": {
+        "value": null,
+        "MQTT_topic": "sidestandDown"
+    },
+    "warningLights": {
+        "value": null,
+        "MQTT_topic": "warningLights"
+    },
+    "rangeByMode": {
+        "value": null,
+        "MQTT_topic": "rangeByMode"
+    },
+    "bmsFlags": {
+        "value": null,
+        "MQTT_topic": "bmsFlags"
     }
 }
