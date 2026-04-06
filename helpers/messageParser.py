@@ -111,42 +111,44 @@ class MessageParser:
                 self.parameters["bmsFlags"]["value"] = int(parts[3], 16)
 
             # 0x181 - BMS live: current (bytes 6-7, signed little-endian, /10 = amps)
-            elif rcan_id == "181" and len(parts) >= 10:
-                b6 = int(parts[8], 16)
-                b7 = int(parts[9], 16)
+            # parts layout: $RCAN,{ID},{len},{b0},{b1},{b2},{b3},{b4},{b5},{b6},{b7},OK
+            #                  0     1    2    3    4    5    6    7    8    9    10   11
+            elif rcan_id == "181" and len(parts) >= 11:
+                b6 = int(parts[9], 16)
+                b7 = int(parts[10], 16)
                 current_raw = b6 | (b7 << 8)
                 if current_raw > 32767:
                     current_raw -= 65536
                 self.parameters["bmsCurrent"]["value"] = round(current_raw / 10.0, 1)
 
             # 0x189 - Battery NTC temperatures (3 probes, bytes 2-7, /100 = celsius)
-            elif rcan_id == "189" and len(parts) >= 10:
-                ntc1 = int(parts[4], 16) | (int(parts[5], 16) << 8)
-                ntc2 = int(parts[6], 16) | (int(parts[7], 16) << 8)
-                ntc3 = int(parts[8], 16) | (int(parts[9], 16) << 8)
+            elif rcan_id == "189" and len(parts) >= 11:
+                ntc1 = int(parts[5], 16) | (int(parts[6], 16) << 8)
+                ntc2 = int(parts[7], 16) | (int(parts[8], 16) << 8)
+                ntc3 = int(parts[9], 16) | (int(parts[10], 16) << 8)
                 self.parameters["batteryNTC1"]["value"] = round(ntc1 / 100.0, 1)
                 self.parameters["batteryNTC2"]["value"] = round(ntc2 / 100.0, 1)
                 self.parameters["batteryNTC3"]["value"] = round(ntc3 / 100.0, 1)
 
             # 0x391 - Motor RPM (bytes 4-5, unsigned little-endian)
-            elif rcan_id == "391" and len(parts) >= 8:
-                b4 = int(parts[6], 16)
-                b5 = int(parts[7], 16)
+            elif rcan_id == "391" and len(parts) >= 9:
+                b4 = int(parts[7], 16)
+                b5 = int(parts[8], 16)
                 self.parameters["motorRPM"]["value"] = b4 | (b5 << 8)
 
             # 0x381 - Motor power/torque (bytes 2-3, signed little-endian)
-            elif rcan_id == "381" and len(parts) >= 6:
-                b2 = int(parts[4], 16)
-                b3 = int(parts[5], 16)
+            elif rcan_id == "381" and len(parts) >= 7:
+                b2 = int(parts[5], 16)
+                b3 = int(parts[6], 16)
                 power_raw = b2 | (b3 << 8)
                 if power_raw > 32767:
                     power_raw -= 65536
                 self.parameters["motorPower"]["value"] = power_raw
 
             # 0x371 - Votol bus voltage (bytes 6-7, unsigned little-endian, /10 = volts)
-            elif rcan_id == "371" and len(parts) >= 10:
-                b6 = int(parts[8], 16)
-                b7 = int(parts[9], 16)
+            elif rcan_id == "371" and len(parts) >= 11:
+                b6 = int(parts[9], 16)
+                b7 = int(parts[10], 16)
                 self.parameters["busVoltage"]["value"] = round((b6 | (b7 << 8)) / 10.0, 1)
 
         except (ValueError, IndexError, KeyError) as e:
