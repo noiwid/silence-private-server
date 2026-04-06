@@ -166,5 +166,33 @@
     "bmsFlags": {
         "value": null,
         "MQTT_topic": "bmsFlags"
+    },
+    "bmsCurrent": {
+        "value": null,
+        "MQTT_topic": "bmsCurrent"
+    },
+    "batteryNTC1": {
+        "value": null,
+        "MQTT_topic": "batteryNTC1"
+    },
+    "batteryNTC2": {
+        "value": null,
+        "MQTT_topic": "batteryNTC2"
+    },
+    "batteryNTC3": {
+        "value": null,
+        "MQTT_topic": "batteryNTC3"
+    },
+    "motorRPM": {
+        "value": null,
+        "MQTT_topic": "motorRPM"
+    },
+    "motorPower": {
+        "value": null,
+        "MQTT_topic": "motorPower"
+    },
+    "busVoltage": {
+        "value": null,
+        "MQTT_topic": "busVoltage"
     }
 }

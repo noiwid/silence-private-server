@@ -163,9 +163,24 @@ class SilenceServerService(threading.Thread):
                         scooterSocket.send("$RCAN,187".encode())
                         scooterSocket.send("$RCAN,188".encode())
                         # Extended CAN: ECU mode/switches, range, BMS flags
+                        # Small delay between sends to avoid overwhelming the Astra module
+                        time.sleep(0.05)
                         scooterSocket.send("$RCAN,182".encode())
+                        time.sleep(0.05)
                         scooterSocket.send("$RCAN,280".encode())
+                        time.sleep(0.05)
                         scooterSocket.send("$RCAN,300".encode())
+                        # Decoded CAN sensors: BMS current, temperatures, Votol RPM/power/voltage
+                        time.sleep(0.05)
+                        scooterSocket.send("$RCAN,181".encode())
+                        time.sleep(0.05)
+                        scooterSocket.send("$RCAN,189".encode())
+                        time.sleep(0.05)
+                        scooterSocket.send("$RCAN,371".encode())
+                        time.sleep(0.05)
+                        scooterSocket.send("$RCAN,381".encode())
+                        time.sleep(0.05)
+                        scooterSocket.send("$RCAN,391".encode())
                         last_BMS_pooling_time = time.time()
 
                     if self.keepAliveInterval > 0 and time.time() - last_keep_alive_sent > self.keepAliveInterval:
