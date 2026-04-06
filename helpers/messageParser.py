@@ -71,6 +71,17 @@ class MessageParser:
                                 log.exception(f"Exception in parsing parameter {parameter}")
 
 
+                # Validate parsed data before publishing — the last Z frame before
+                # shutdown often contains corrupted values (odo=867M, energy=-55923, etc.)
+                odo_val = self.parameters.get("odo", {}).get("value")
+                if odo_val is not None and odo_val != "None":
+                    try:
+                        if float(odo_val) > 1000000 or float(odo_val) < 0:
+                            log.warning("Corrupt Z frame detected (odo=%s), skipping publish", odo_val)
+                            return
+                    except (ValueError, TypeError):
+                        pass
+
                 log.debug(f"Message protocol Z parsed: {self.parameters}")
                 pub.sendMessage(TOPIC_SCOOTER_STATUS, scooter_status = self.parameters)
 
