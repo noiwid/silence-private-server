@@ -1,4 +1,20 @@
 {
+    "motionDetected": {
+        "value": null,
+        "MQTT_topic": "motionDetected"
+    },
+    "overspeedAlarm": {
+        "value": null,
+        "MQTT_topic": "overspeedAlarm"
+    },
+    "bikefall": {
+        "value": null,
+        "MQTT_topic": "bikefall"
+    },
+    "sidestandOut": {
+        "value": null,
+        "MQTT_topic": "sidestandOut"
+    },
     "status": {
         "value": null,
         "MQTT_topic": "status"
