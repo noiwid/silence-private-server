@@ -55,6 +55,7 @@ class SilenceServerService(threading.Thread):
     def run(self):
 
         def listenerClient(scooterSocket):
+            did_increment_count = False
 
             try:
                 # Once connected verify the login
@@ -79,6 +80,7 @@ class SilenceServerService(threading.Thread):
                 # Verify if IMEI is correct
                 if retrievedIMEI == self.IMEI:
                     self.connectionCount = self.connectionCount +1
+                    did_increment_count = True
                     if self.bridgeMode:
                         log.info("We're in bridge mode, trying to connect to Silence Server")
                         silenceClientSocket.connect((self.silenceHOST, self.silencePORT))  # Trying to connect to Silence Servers.
@@ -222,7 +224,8 @@ class SilenceServerService(threading.Thread):
                 except:
                     log.error("socket silence server already close")
 
-                self.connectionCount = self.connectionCount - 1
+                if did_increment_count:
+                    self.connectionCount = self.connectionCount - 1
                 log.info("closing thread, connected clients: "+str(self.connectionCount))
 
         #------------------------------------- LISTENING TO INCOMING CONNECTIONS ---------------------------------------
