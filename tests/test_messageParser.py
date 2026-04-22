@@ -166,6 +166,56 @@ def test_rcan_malformed_frame_does_not_raise(parser):
 
 
 # ---------------------------------------------------------------------------
+# $RCAN 185-188 cell voltages via parse_message_from_scooter_protocol_astra
+# ---------------------------------------------------------------------------
+
+def test_astra_rcan_185_cell_voltages_via_public_api(parser):
+    # $RCAN,185 carries cell voltages 1-4. Layout (0-indexed):
+    #   positions[0] = "$RCAN"
+    #   positions[1] = "185"
+    #   positions[2] = "8"       (length)
+    #   positions[3] = b0_hi     Cell1 high byte
+    #   positions[4] = b0_lo     Cell1 low byte
+    #   positions[5..10] = Cells 2..4
+    # combined = positions[byte_pos[1]] + positions[byte_pos[0]]
+    # For Cell1 (byte_pos [3,4]): positions[4] + positions[3]
+    # So "0E" + "0D" = "0E0D" = 3597 mV
+    parser.parse_message_from_scooter_protocol_astra(
+        b"$RCAN,185,8,0D,0E,0E,0D,0C,0E,0F,0D,OK\r\n"
+    )
+    assert parser.parameters["Cell1Voltage"]["value"] == 0x0E0D   # 3597
+    assert parser.parameters["Cell2Voltage"]["value"] == 0x0D0E   # 3342
+    assert parser.parameters["Cell3Voltage"]["value"] == 0x0E0C   # 3596
+    assert parser.parameters["Cell4Voltage"]["value"] == 0x0D0F   # 3343
+
+
+def test_astra_rcan_186_cell_voltages_via_public_api(parser):
+    # Cells 5-8 on $RCAN,186 — same encoding pattern
+    parser.parse_message_from_scooter_protocol_astra(
+        b"$RCAN,186,8,10,0E,11,0E,12,0E,13,0E,OK\r\n"
+    )
+    assert parser.parameters["Cell5Voltage"]["value"] == 0x0E10
+    assert parser.parameters["Cell6Voltage"]["value"] == 0x0E11
+    assert parser.parameters["Cell7Voltage"]["value"] == 0x0E12
+    assert parser.parameters["Cell8Voltage"]["value"] == 0x0E13
+
+
+def test_astra_also_triggers_extended_can_parsing(parser):
+    # parse_message_from_scooter_protocol_astra also calls _parse_extended_can
+    # so sending an 0x280 frame via the public API must decode the drive mode.
+    parser.parse_message_from_scooter_protocol_astra(b"$RCAN,280,2,21,00,OK\r\n")
+    assert parser.parameters["driveMode"]["value"] == "SPORT"
+
+
+def test_astra_non_rcan_frame_does_not_raise(parser):
+    # The $ASTRA login frame and other non-RCAN payloads should be accepted
+    # silently (no field matches any header, no exception raised).
+    parser.parse_message_from_scooter_protocol_astra(
+        b"$ASTRA;AT402;860873043967941;;7.0.61.35;Z;0\r\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # "Scooter off" reset of extended CAN fields (our 2026-04-22 fix)
 # ---------------------------------------------------------------------------
 
@@ -239,15 +289,16 @@ def test_normal_z_frame_not_touched_by_debundler(parser):
     assert parser.parameters["status"]["value"] == 4
 
 
-def test_bundled_frame_extracts_last_subframe(parser):
-    # The debundler only kicks in for frames > 200 bytes. Build a 3-sub
-    # bundled frame: 4 header + 3*88 sub + 2 checksum = 270 bytes.
-    # After debundling, the synthetic single-record frame is 88+6 = 94 bytes,
-    # which matches the 94-byte layout the Z-protocol config expects
-    # (status at byte 82).
+@pytest.mark.parametrize("sub_count", [3, 5, 7, 11])
+def test_bundled_frame_extracts_last_subframe(parser, sub_count):
+    # The debundler only kicks in for frames > 200 bytes. Real-world
+    # captures showed 2-11 sub-records per frame depending on how much
+    # $RCAN polling delayed the comm loop. Verify the math holds for
+    # representative sub_count values (2 gives 182 bytes, below the
+    # 200-byte threshold, so not debundled; 3 is the minimum that
+    # triggers the code path).
     sub_size = 88
-    sub_count = 3
-    total_len = 4 + sub_count * sub_size + 2  # 270 bytes
+    total_len = 4 + sub_count * sub_size + 2
 
     frame = bytearray(total_len)
     frame[0] = 0x5A
@@ -255,13 +306,46 @@ def test_bundled_frame_extracts_last_subframe(parser):
     frame[2] = total_len & 0xFF
     frame[3] = sub_count
 
-    # sub 0, 1 have status=3 at offset (82 - 4) = 78 inside the 88-byte sub
-    # sub 2 (last, latest) has status=4 — this is what we want to extract
+    # All but the last sub have status=3 at offset (82 - 4) = 78.
+    # The last sub — which the debundler must extract — has status=4.
     for i in range(sub_count):
         frame[4 + i * sub_size + 78] = 3 if i < sub_count - 1 else 4
 
     parser.parse_message_from_scooter_protocol_Z(bytes(frame))
     assert parser.parameters["status"]["value"] == 4
+
+
+def test_bundled_frame_with_sub_count_one_is_not_debundled(parser):
+    # Edge case: a "bundled" frame with sub_count=1 should bypass the
+    # debundling branch (the guard `if sub_count > 1` at messageParser.py).
+    # We build a 250-byte frame with sub_count=1 — the debundler should
+    # treat it as a normal frame. The Z-protocol config doesn't know how
+    # to parse a 250-byte frame (expected lengths are 94/99/200), so no
+    # fields will be extracted, but the parser must not crash.
+    total_len = 250
+    frame = bytearray(total_len)
+    frame[0] = 0x5A
+    frame[1] = (total_len >> 8) & 0xFF
+    frame[2] = total_len & 0xFF
+    frame[3] = 1  # sub_count = 1
+
+    # Must not raise
+    parser.parse_message_from_scooter_protocol_Z(bytes(frame))
+
+
+def test_bundled_frame_degenerate_sub_count_does_not_crash(parser):
+    # Attacker / malformed input: sub_count too high for the payload,
+    # leading to `sub_size = (len - 4 - 2) // sub_count = 0`. The guard
+    # `if sub_size > 0` must prevent any slice manipulation.
+    total_len = 250  # > 200 so we enter the debundling branch
+    frame = bytearray(total_len)
+    frame[0] = 0x5A
+    frame[1] = (total_len >> 8) & 0xFF
+    frame[2] = total_len & 0xFF
+    frame[3] = 250  # way too many "sub-records"
+
+    # Must not raise even though sub_size evaluates to 0
+    parser.parse_message_from_scooter_protocol_Z(bytes(frame))
 
 
 # ---------------------------------------------------------------------------

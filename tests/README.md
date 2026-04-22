@@ -15,7 +15,7 @@ when the scooter firmware or CAN layout changes.
 - Scooter-off behaviour: reset of extended CAN fields, `scooter_off` flag
 - Graceful handling of malformed input (no crashes on bad data)
 
-34 tests run in well under a second.
+43 tests run in well under a second.
 
 ## How to run
 
