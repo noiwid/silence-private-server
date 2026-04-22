@@ -24,6 +24,17 @@ class MessageParser:
         with open(os.path.join(os.path.dirname(__file__), "RCAN_definition.json")) as RCAN_message_configuration:
             self.RCAN_message_configuration = json.load(RCAN_message_configuration)
 
+        # Fields populated by extended CAN polling (_parse_extended_can).
+        # These are reset to "None" when the scooter is off so consumers
+        # don't see stale values (e.g. RPM=1341, driveMode=SPORT while
+        # the scooter has been parked for hours).
+        self._extended_can_keys = [
+            "driveMode", "driveReady", "sidestandDown", "warningLights",
+            "rangeByMode", "bmsFlags", "bmsCurrent",
+            "batteryNTC1", "batteryNTC2", "batteryNTC3",
+            "motorRPM", "motorPower", "busVoltage",
+        ]
+
     def parse_message_from_scooter_protocol_Z(self, data):
 
         if len(data) > 0:
@@ -81,6 +92,16 @@ class MessageParser:
                             return
                     except (ValueError, TypeError):
                         pass
+
+                # When the scooter is off, the extended CAN fields (populated
+                # only via $RCAN polling during movement) keep their stale
+                # last-known values indefinitely. Reset them to "None" so
+                # consumers see a clean state that matches reality (no RPM,
+                # no drive mode, no bus voltage when the scooter is off).
+                if self.scooter_off:
+                    for key in self._extended_can_keys:
+                        if key in self.parameters:
+                            self.parameters[key]["value"] = "None"
 
                 log.debug(f"Message protocol Z parsed: {self.parameters}")
                 pub.sendMessage(TOPIC_SCOOTER_STATUS, scooter_status = self.parameters)
