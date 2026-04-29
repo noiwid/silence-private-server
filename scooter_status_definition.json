@@ -1,4 +1,20 @@
 {
+    "motionDetected": {
+        "value": null,
+        "MQTT_topic": "motionDetected"
+    },
+    "overspeedAlarm": {
+        "value": null,
+        "MQTT_topic": "overspeedAlarm"
+    },
+    "bikefall": {
+        "value": null,
+        "MQTT_topic": "bikefall"
+    },
+    "sidestandOut": {
+        "value": null,
+        "MQTT_topic": "sidestandOut"
+    },
     "status": {
         "value": null,
         "MQTT_topic": "status"
@@ -142,5 +158,57 @@
     "Cell14Voltage": {
         "value": null,
         "MQTT_topic": "Cell14Voltage"
+    },
+    "driveMode": {
+        "value": null,
+        "MQTT_topic": "driveMode"
+    },
+    "driveReady": {
+        "value": null,
+        "MQTT_topic": "driveReady"
+    },
+    "sidestandDown": {
+        "value": null,
+        "MQTT_topic": "sidestandDown"
+    },
+    "warningLights": {
+        "value": null,
+        "MQTT_topic": "warningLights"
+    },
+    "rangeByMode": {
+        "value": null,
+        "MQTT_topic": "rangeByMode"
+    },
+    "bmsFlags": {
+        "value": null,
+        "MQTT_topic": "bmsFlags"
+    },
+    "bmsCurrent": {
+        "value": null,
+        "MQTT_topic": "bmsCurrent"
+    },
+    "batteryNTC1": {
+        "value": null,
+        "MQTT_topic": "batteryNTC1"
+    },
+    "batteryNTC2": {
+        "value": null,
+        "MQTT_topic": "batteryNTC2"
+    },
+    "batteryNTC3": {
+        "value": null,
+        "MQTT_topic": "batteryNTC3"
+    },
+    "motorRPM": {
+        "value": null,
+        "MQTT_topic": "motorRPM"
+    },
+    "motorPower": {
+        "value": null,
+        "MQTT_topic": "motorPower"
+    },
+    "busVoltage": {
+        "value": null,
+        "MQTT_topic": "busVoltage"
     }
 }

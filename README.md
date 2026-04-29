@@ -85,6 +85,16 @@ In this file, specify the following parameters: \
 - `bridgeMode`: If set to true, the server will still send data to the Silence server, allowing the Silence app to function normally.
     If you do not want to send data to Silence (which will cause the app to stop working), set this to FALSE.
 - `MQTT broker`: Configure **port**, **user**, **pass** of your local MQTT Broker.
+- `BMScellVoltage_pooling_interval`: Seconds between extended-CAN poll bursts
+  (cell voltages 1-14 via `$RCAN,185-188` **and** the extended CAN sensors
+  added with the extended-CAN feature — motor RPM/power, bus voltage, BMS
+  current, three NTC temperatures, drive mode, sidestand, range by mode,
+  BMS flags via `$RCAN,181/182/189/280/300/371/381/391`). Only polled while
+  the scooter is on. Defaults to 600 s (historical default, conservative).
+  Lower values (e.g. 20) give near-real-time extended telemetry at the cost
+  of a few hundred milliseconds of serial traffic per poll burst; too low
+  a value may trigger Astra frame bundling — which is handled, but adds
+  parsing overhead. 20 s is a good trade-off if you want live RPM/power.
 
 ## Running the Server
 Once you have configured your '**configuration.json**'file, you can run the server. Here are the steps:

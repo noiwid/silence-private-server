@@ -48,6 +48,34 @@ mqtt:
       device:
         identifiers: "Silence Scooter Device"
 
+    # Extended CAN binary sensors
+    - name: "Drive Ready"
+      unique_id: "silence_scooter_drive_ready"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/driveReady"
+      device_class: "power"
+      payload_on: "1"
+      payload_off: "0"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Sidestand Down"
+      unique_id: "silence_scooter_sidestand_down"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/sidestandDown"
+      device_class: "opening"
+      payload_on: "1"
+      payload_off: "0"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Warning Lights"
+      unique_id: "silence_scooter_warning_lights"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/warningLights"
+      device_class: "problem"
+      payload_on: "1"
+      payload_off: "0"
+      device:
+        identifiers: "Silence Scooter Device"
+
   sensor:
     - name: "Status"
       unique_id: silence_scooter_status
@@ -321,6 +349,94 @@ mqtt:
       state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/longitude"
       unit_of_measurement: "°"
       unique_id: "silence_scooter_device_silence_longitude"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    # Extended CAN sensors
+    - name: "Drive Mode"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/driveMode"
+      icon: "mdi:steering"
+      unique_id: "silence_scooter_drive_mode"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Range by Mode"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/rangeByMode"
+      device_class: "distance"
+      unit_of_measurement: "km"
+      icon: "mdi:map-marker-distance"
+      unique_id: "silence_scooter_range_by_mode"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "BMS Flags"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/bmsFlags"
+      icon: "mdi:flag"
+      unique_id: "silence_scooter_bms_flags"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "BMS Current"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/bmsCurrent"
+      unit_of_measurement: "A"
+      device_class: "current"
+      state_class: "measurement"
+      icon: "mdi:current-dc"
+      unique_id: "silence_scooter_bms_current"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Battery NTC 1"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/batteryNTC1"
+      unit_of_measurement: "°C"
+      device_class: "temperature"
+      state_class: "measurement"
+      unique_id: "silence_scooter_battery_ntc_1"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Battery NTC 2"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/batteryNTC2"
+      unit_of_measurement: "°C"
+      device_class: "temperature"
+      state_class: "measurement"
+      unique_id: "silence_scooter_battery_ntc_2"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Battery NTC 3"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/batteryNTC3"
+      unit_of_measurement: "°C"
+      device_class: "temperature"
+      state_class: "measurement"
+      unique_id: "silence_scooter_battery_ntc_3"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Motor RPM"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/motorRPM"
+      unit_of_measurement: "rpm"
+      state_class: "measurement"
+      icon: "mdi:engine"
+      unique_id: "silence_scooter_motor_rpm"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Motor Power"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/motorPower"
+      state_class: "measurement"
+      icon: "mdi:flash"
+      unique_id: "silence_scooter_motor_power"
+      device:
+        identifiers: "Silence Scooter Device"
+
+    - name: "Bus Voltage"
+      state_topic: "home/silence-server/YOUR_SCOOTER_IMEI/status/busVoltage"
+      unit_of_measurement: "V"
+      device_class: "voltage"
+      state_class: "measurement"
+      icon: "mdi:flash-triangle"
+      unique_id: "silence_scooter_bus_voltage"
       device:
         identifiers: "Silence Scooter Device"
 
