@@ -32,6 +32,8 @@ class SilenceServerService(threading.Thread):
 
         self.keepAliveInterval = configuration["keepAliveInterval"]
         self.connectionCount = 0
+        self.connectionLock = threading.Lock()
+        self.newConnectionEvent = threading.Event()
         self.ACKresponse = b'\x06'
 
         self.BMScellVoltage_pooling_interval = configuration["BMScellVoltage_pooling_interval"]
@@ -79,8 +81,16 @@ class SilenceServerService(threading.Thread):
 
                 # Verify if IMEI is correct
                 if retrievedIMEI == self.IMEI:
-                    self.connectionCount = self.connectionCount +1
-                    did_increment_count = True
+                    # Signal any existing thread to exit, then take its slot.
+                    # Prevents "two valid login" deadlock when an old thread is
+                    # blocked on a slow _telegramReceiver and can't observe
+                    # connectionCount > 1 in time.
+                    with self.connectionLock:
+                        if self.connectionCount >= 1:
+                            log.info("new login detected, signaling old thread to exit")
+                            self.newConnectionEvent.set()
+                        self.connectionCount = self.connectionCount + 1
+                        did_increment_count = True
                     if self.bridgeMode:
                         log.info("We're in bridge mode, trying to connect to Silence Server")
                         silenceClientSocket.connect((self.silenceHOST, self.silencePORT))  # Trying to connect to Silence Servers.
@@ -111,13 +121,22 @@ class SilenceServerService(threading.Thread):
                     log.error("no my IMEI")
                     raise Exception("Wrong login")
 
-                # Wait for old socket to close
+                # Wait for old socket to close. The old thread has been
+                # signaled via newConnectionEvent and should exit promptly.
+                # Generous timeout (30s) covers slow socket closes; if it still
+                # doesn't drop, force the count down to 1 ourselves rather than
+                # crash-looping (which is what caused the historical deadlock).
                 wait_counter = 0
                 while self.connectionCount > 1:
                     wait_counter += 1
-                    if wait_counter > 100:
-                        raise Exception("two valid login at the same time detected")
+                    if wait_counter > 300:
+                        log.warning("old thread did not exit in 30s, forcing connectionCount reset")
+                        with self.connectionLock:
+                            self.connectionCount = 1
+                        break
                     time.sleep(0.1)
+                # We are now the active thread; clear the event for future logins
+                self.newConnectionEvent.clear()
 
                 last_keep_alive_sent = time.time()
                 last_BMS_pooling_time = 0
@@ -208,8 +227,8 @@ class SilenceServerService(threading.Thread):
                         #else:
                         #    log.info("no data from silence")
 
-                    if self.connectionCount > 1:     # If a new socket was opened we close this thread.
-                        raise Exception("two connection detected, closing the old one")
+                    if self.newConnectionEvent.is_set():     # A new login arrived; yield our slot.
+                        raise Exception("new connection detected, closing the old one")
 
             except Exception:
                 log.exception ("Exception on listener")
@@ -225,7 +244,8 @@ class SilenceServerService(threading.Thread):
                     log.error("socket silence server already close")
 
                 if did_increment_count:
-                    self.connectionCount = self.connectionCount - 1
+                    with self.connectionLock:
+                        self.connectionCount = max(0, self.connectionCount - 1)
                 log.info("closing thread, connected clients: "+str(self.connectionCount))
 
         #------------------------------------- LISTENING TO INCOMING CONNECTIONS ---------------------------------------
