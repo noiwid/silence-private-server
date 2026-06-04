@@ -4,6 +4,11 @@
         "maxretry": 3,
         "timeout": 60
     },
+    "SYNC": {
+        "command": "$STMS\r\n",
+        "maxretry": 3,
+        "timeout": 60
+    },
     "TURN_ON_SCOOTER": {
         "command": "$PWON,4\r\n",
         "maxretry": 3,

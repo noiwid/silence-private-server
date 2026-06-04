@@ -116,6 +116,13 @@ class MessageParser:
             try:
                 data = data.decode()
 
+                # $STMS snapshot frame (forced sync via the SYNC command).
+                # Full status in one CSV line; decoded separately because the
+                # field layout differs entirely from $RCAN.
+                if data.startswith("$STMS,"):
+                    self._parse_stms(data)
+                    return
+
                 self._parse_extended_can(data)
 
                 for parameter in self.RCAN_message_configuration:
@@ -130,6 +137,71 @@ class MessageParser:
 
             except Exception:
                 log.exception(f"Exception in handling message protocol astra {data}")
+
+    def _parse_stms(self, data):
+        """Decode a $STMS snapshot frame and publish scooter status.
+
+        Field indices reverse-engineered then cross-checked against live
+        Z-protocol telemetry from the same scooter:
+          SOC=82, Vbat=55.6 (556/10), Tmax=25, Tmin=24, range=109,
+          charged=331.5425 (1193553/3600), regen=28.2425 (101673/3600),
+          discharged=321.8067 (1158504/3600), VIN=UCYSxxxxxxxxxxxxx (17 chars).
+
+        Example frame:
+          $STMS,0,82,25,24,556,0,435036987,0,0,330,330,0,109,0,
+                1193553,101673,1158504,22,<ICCID>,<phone>,<VIN>
+
+        Indices 7 (large counter), 8-12 and 14 are unidentified and left
+        untouched so they don't clobber good Z data — notably odo, which
+        $STMS does not carry (Z odo=6345 km != field 7).
+        """
+        parts = data.strip().split(",")
+
+        # (csv_index, parameter_key, divider)
+        numeric_fields = [
+            (1, "status", 1),
+            (2, "batterySOC", 1),
+            (3, "batteryTempMax", 1),
+            (4, "batteryTempMin", 1),
+            (5, "batteryVoltage", 10),
+            (6, "batteryCurrent", 10),
+            (13, "range", 1),
+            (15, "chargedEnergy", 3600),
+            (16, "RegeneratedEnergy", 3600),
+            (17, "DischargedEnergy", 3600),
+            (18, "ambientTemp", 1),
+        ]
+
+        parsed_any = False
+        for index, key, divider in numeric_fields:
+            if index >= len(parts):
+                continue
+            raw = parts[index].strip()
+            if raw == "":
+                continue
+            try:
+                self.parameters[key]["value"] = int(raw) / divider
+                parsed_any = True
+            except (ValueError, KeyError):
+                log.debug("STMS: cannot parse %s (index %s) value %r", key, index, raw)
+
+        # VIN is the last CSV field; sanity-check it looks like a Silence VIN
+        # before trusting it (guards against a truncated/garbled frame).
+        if len(parts) >= 2:
+            vin = parts[-1].strip()
+            if vin.startswith("UCYS") and len(vin) >= 10:
+                try:
+                    self.parameters["VIN"]["value"] = vin
+                    parsed_any = True
+                except KeyError:
+                    pass
+
+        if not parsed_any:
+            log.warning("STMS frame had no decodable fields: %s", data)
+            return
+
+        log.debug(f"Message $STMS parsed: {self.parameters}")
+        pub.sendMessage(TOPIC_SCOOTER_STATUS, scooter_status=self.parameters)
 
     def _parse_extended_can(self, data):
         """Parse extended CAN data from $RCAN responses."""

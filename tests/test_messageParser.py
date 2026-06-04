@@ -469,3 +469,61 @@ def test_get_scooter_off_status_getter(parser):
     assert parser.get_scooter_off_status() is True
     parser.scooter_off = False
     assert parser.get_scooter_off_status() is False
+
+
+# ---------------------------------------------------------------------------
+# $STMS snapshot frame (SYNC command response)
+# ---------------------------------------------------------------------------
+
+STMS_FRAME = (
+    b"$STMS,0,82,25,24,556,0,435036987,0,0,330,330,0,109,0,"
+    b"1193553,101673,1158504,22,89340760000000000000,+34600000000,"
+    b"UCYS1234567890123\r\n"
+)
+
+
+def test_stms_frame_decodes_snapshot_fields(parser):
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    p = parser.parameters
+    assert p["batterySOC"]["value"] == 82
+    assert p["batteryTempMax"]["value"] == 25
+    assert p["batteryTempMin"]["value"] == 24
+    assert p["batteryVoltage"]["value"] == 55.6
+    assert p["range"]["value"] == 109
+    assert p["chargedEnergy"]["value"] == pytest.approx(331.5425)
+    assert p["RegeneratedEnergy"]["value"] == pytest.approx(28.2425)
+    assert p["DischargedEnergy"]["value"] == pytest.approx(321.8067, abs=1e-4)
+    assert p["ambientTemp"]["value"] == 22
+    assert p["VIN"]["value"] == "UCYS1234567890123"
+
+
+def test_stms_publishes_status(parser, monkeypatch):
+    calls = []
+    import helpers.messageParser as mp
+    monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append((a, kw)))
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    assert len(calls) == 1
+
+
+def test_stms_leaves_unidentified_fields_untouched(parser):
+    # $STMS does not carry odo (field 7 is an unrelated large counter);
+    # an odo previously read from Z telemetry must survive a snapshot.
+    parser.parameters["odo"]["value"] = 6345.0
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    assert parser.parameters["odo"]["value"] == 6345.0
+
+
+def test_stms_rejects_implausible_vin(parser):
+    # A truncated/garbled last field must not overwrite a known-good VIN.
+    parser.parameters["VIN"]["value"] = "UCYS_KNOWN_GOOD00"
+    frame = STMS_FRAME.replace(b"UCYS1234567890123", b"GARBLED")
+    parser.parse_message_from_scooter_protocol_astra(frame)
+    assert parser.parameters["VIN"]["value"] == "UCYS_KNOWN_GOOD00"
+
+
+def test_stms_undecodable_frame_does_not_publish(parser, monkeypatch):
+    calls = []
+    import helpers.messageParser as mp
+    monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append((a, kw)))
+    parser.parse_message_from_scooter_protocol_astra(b"$STMS,,\r\n")
+    assert calls == []
