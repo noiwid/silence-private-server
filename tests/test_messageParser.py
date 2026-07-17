@@ -289,14 +289,13 @@ def test_normal_z_frame_not_touched_by_debundler(parser):
     assert parser.parameters["status"]["value"] == 4
 
 
-@pytest.mark.parametrize("sub_count", [3, 5, 7, 11])
+@pytest.mark.parametrize("sub_count", [2, 3, 5, 7, 11])
 def test_bundled_frame_extracts_last_subframe(parser, sub_count):
-    # The debundler only kicks in for frames > 200 bytes. Real-world
-    # captures showed 2-11 sub-records per frame depending on how much
-    # $RCAN polling delayed the comm loop. Verify the math holds for
-    # representative sub_count values (2 gives 182 bytes, below the
-    # 200-byte threshold, so not debundled; 3 is the minimum that
-    # triggers the code path).
+    # The debundler kicks in for any Z frame whose length is not a known
+    # single-frame size. Real-world captures showed 2-11 sub-records per
+    # frame depending on how much $RCAN polling delayed the comm loop.
+    # sub_count=2 (182 bytes) is the regression case: the old
+    # `len > 200` check missed it and the packet was silently dropped.
     sub_size = 88
     total_len = 4 + sub_count * sub_size + 2
 
@@ -337,7 +336,7 @@ def test_bundled_frame_degenerate_sub_count_does_not_crash(parser):
     # Attacker / malformed input: sub_count too high for the payload,
     # leading to `sub_size = (len - 4 - 2) // sub_count = 0`. The guard
     # `if sub_size > 0` must prevent any slice manipulation.
-    total_len = 250  # > 200 so we enter the debundling branch
+    total_len = 250  # not a known single-frame length -> debundling branch
     frame = bytearray(total_len)
     frame[0] = 0x5A
     frame[1] = (total_len >> 8) & 0xFF

@@ -24,6 +24,14 @@ class MessageParser:
         with open(os.path.join(os.path.dirname(__file__), "RCAN_definition.json")) as RCAN_message_configuration:
             self.RCAN_message_configuration = json.load(RCAN_message_configuration)
 
+        # Valid single-frame lengths derived from decode config — used to detect bundled frames.
+        self._valid_z_lengths = {
+            l
+            for p in self.message_decode.values()
+            for mt in p["message_type"]
+            for l in mt["message_lenght"]
+        }
+
         # Fields populated by extended CAN polling (_parse_extended_can).
         # These are reset to "None" when the scooter is off so consumers
         # don't see stale values (e.g. RPM=1341, driveMode=SPORT while
@@ -44,7 +52,9 @@ class MessageParser:
             # multiple Z sub-frames get buffered and read as one big frame.
             # Format: Z[len_hi][len_lo][count][sub0][sub1]...[checksum]
             # Extract last sub-frame (most recent) and wrap in valid Z header.
-            if len(data) > 200 and data[0] == 0x5A and len(data) >= 4:
+            # Fix: check sub_count > 1 and not a known single-frame size,
+            # instead of len > 200 (misses 182-byte dual-frame packets).
+            if data[0] == 0x5A and len(data) >= 4 and len(data) not in self._valid_z_lengths:
                 sub_count = data[3]
                 if sub_count > 1:
                     sub_size = (len(data) - 4 - 2) // sub_count  # 4=header, 2=checksum
