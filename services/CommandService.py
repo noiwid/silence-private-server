@@ -79,7 +79,7 @@ class CommandService:
             command_to_insert = Command(command, command_config)
             self.command_queue.put(command_to_insert)
 
-            log.info(f"Command inserted in queue: {command_to_insert.to_json()} ({imei})")
+            log.info(f"Command inserted in queue: {command_to_insert.to_json()} ({self.IMEI})")
 
         except Exception as ex:
             log.exception("Exception in command_received")
@@ -88,18 +88,18 @@ class CommandService:
     def cleanup_queue(self):
         for item in list(self.command_queue.queue):
             if (item.checkTimeout()):
-                log.error(f"Command timeout reached: {item.to_json()} ({imei})")
+                log.error(f"Command timeout reached: {item.to_json()} ({self.IMEI})")
                 #self.command_queue.task_done()
                 self.command_queue.queue.remove(item)
-                pub.sendMessage(TOPIC_COMMAND_RESULT, command=item.Code, result=f"Command timeout reached, {item.to_json()} ({imei})")
+                pub.sendMessage(TOPIC_COMMAND_RESULT, command=item.Code, result=f"Command timeout reached, {item.to_json()} ({self.IMEI})")
 
     def get_next_command(self):
         while not self.command_queue.empty():
             next_command = self.command_queue.get()
             if (next_command.checkTimeout()):
-                log.error(f"Command timeout reached: {next_command.to_json()} ({imei})")
+                log.error(f"Command timeout reached: {next_command.to_json()} ({self.IMEI})")
                 self.command_queue.task_done()
-                pub.sendMessage(TOPIC_COMMAND_RESULT, command=next_command.Code, result=f"Command timeout reached, {next_command.to_json()} ({imei})")
+                pub.sendMessage(TOPIC_COMMAND_RESULT, command=next_command.Code, result=f"Command timeout reached, {next_command.to_json()} ({self.IMEI})")
 
             return next_command
 
@@ -109,17 +109,17 @@ class CommandService:
         return not self.command_queue.empty()
 
     def command_executed(self, command, response):
-        log.info(f"Command executed: {command.to_json()} ({imei})")
+        log.info(f"Command executed: {command.to_json()} ({self.IMEI})")
         self.command_queue.task_done()
-        pub.sendMessage(TOPIC_COMMAND_RESULT, command=command.Code, result=f"Response <{response.decode()}> from IMEI {imei}")
+        pub.sendMessage(TOPIC_COMMAND_RESULT, command=command.Code, result=f"Response <{response.decode()}> from IMEI {self.IMEI}")
 
     def command_failed(self, command):
-        log.error(f"Command failed: {command.to_json()} ({imei})")
+        log.error(f"Command failed: {command.to_json()} ({self.IMEI})")
         self.command_queue.task_done()
 
         if (not command.retry()):
-            log.error(f"Command retry limit reached: {command.to_json()} ({imei})")
-            pub.sendMessage(TOPIC_COMMAND_RESULT, command=command.Code, result=f"Command retry limit reached: {command.to_json()} ({imei})")
+            log.error(f"Command retry limit reached: {command.to_json()} ({self.IMEI})")
+            pub.sendMessage(TOPIC_COMMAND_RESULT, command=command.Code, result=f"Command retry limit reached: {command.to_json()} ({self.IMEI})")
         else:
-            log.info(f"Command retry: {command.to_json()} ({imei})")
+            log.info(f"Command retry: {command.to_json()} ({self.IMEI})")
             self.command_queue.put(command)
