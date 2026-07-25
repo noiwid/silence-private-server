@@ -323,7 +323,24 @@ class SilenceServerService(threading.Thread):
 
             except socket.timeout:
                 if len(data) > 0:
-                    _messageReceived(messages,data,protocol)
+                    if protocol == "Astra" and len(data) >= 2 and int(data[-1]) == 10 and int(data[-2]) == 13:
+                        # Trame Astra complète arrivée pile au timeout
+                        _messageReceived(messages,data,protocol)
+                    elif receiverName != "A":
+                        # Côté Silence officiel (bridge) : comportement historique
+                        _messageReceived(messages,data,protocol)
+                    else:
+                        # Trame incomplète (coupure GSM / bus CAN en vrac) ou
+                        # octets hors protocole (scanners Internet sur le port
+                        # exposé) : on ne transmet RIEN au parseur ni à la base
+                        # — les trames tronquées produisaient des valeurs
+                        # aberrantes (odo à 980M via split() désaligné) et le
+                        # junk des scanners polluait le cache et la DB.
+                        log.warning(f"dropping invalid/incomplete telegram ({len(data)} bytes, protocol='{protocol or 'none'}') on receiver {receiverName}")
+                        if not messages:
+                            # Round sans AUCUN message valide : connexion
+                            # étrangère (scanner) -> on la ferme immédiatement.
+                            return messages,1
                 return messages,0
 
             except OSError as e:    # ConnectionResetError, broken pipe, closed socket, ...

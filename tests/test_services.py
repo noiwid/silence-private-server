@@ -52,10 +52,10 @@ class FakeSocket:
         return b''
 
 
-def _receive(fake_socket, first_frame=True):
+def _receive(fake_socket, first_frame=True, receiver="A"):
     # _telegramReceiver does not use `self`, call it unbound
     return SilenceServerService._telegramReceiver(
-        None, fake_socket, 0.2, 0.2, "A", first_frame)
+        None, fake_socket, 0.2, 0.2, receiver, first_frame)
 
 
 COMMAND_CONFIG = {"command": "$POLL\r\n", "maxretry": 3, "timeout": 60}
@@ -118,12 +118,42 @@ def test_telegram_receiver_complete_frame_then_eof():
     assert bytes(messages[0]["data"]) == b'$A\r\n'
 
 
-def test_telegram_receiver_partial_frame_on_timeout_still_delivered():
-    # Existing behaviour preserved: partial data on timeout is delivered.
+def test_telegram_receiver_partial_frame_from_scooter_is_dropped():
+    # NEW behaviour: a truncated Astra frame (GSM cut / flaky CAN bus) is
+    # never delivered to the parser — misaligned split() used to produce
+    # absurd values (odo=980M). A round with ONLY garbage closes the socket.
     messages, crashed = _receive(FakeSocket([b'$', b'A', socket.timeout()]))
+    assert crashed == 1
+    assert len(messages) == 0
+
+
+def test_telegram_receiver_partial_frame_from_silence_bridge_kept():
+    # Legacy behaviour preserved on the Silence-official side (bridge mode).
+    messages, crashed = _receive(FakeSocket([b'$', b'A', socket.timeout()]),
+                                 receiver="S")
     assert crashed == 0
     assert len(messages) == 1
     assert bytes(messages[0]["data"]) == b'$A'
+
+
+def test_telegram_receiver_scanner_junk_dropped_and_connection_closed():
+    # Internet scanners hitting the exposed port send HTTP bytes; they must
+    # never reach the parser/DB and the connection must be closed at once.
+    junk = [bytes([c]) for c in b'GET / HTTP/1.1'] + [socket.timeout()]
+    messages, crashed = _receive(FakeSocket(junk))
+    assert crashed == 1
+    assert len(messages) == 0
+
+
+def test_telegram_receiver_valid_frame_then_junk_keeps_connection():
+    # A round that contains at least one VALID frame keeps the connection
+    # alive even if trailing garbage is dropped (flaky scooter mid-ride).
+    seq = ([bytes([c]) for c in b'$RCAN,ER' + b'\r' + b'\n']
+           + [bytes([c]) for c in b'GARBAGE'] + [socket.timeout()])
+    messages, crashed = _receive(FakeSocket(seq))
+    assert crashed == 0
+    assert len(messages) == 1
+    assert bytes(messages[0]["data"]) == b'$RCAN,ER' + b'\r' + b'\n'
 
 
 # ---------------------------------------------------------------------------

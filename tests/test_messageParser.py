@@ -373,16 +373,10 @@ def test_corrupt_odo_value_is_rejected(parser):
 
     parser.parse_message_from_scooter_protocol_Z(bytes(frame))
 
-    # The corrupt value should have been rejected by the >1_000_000 guard,
-    # meaning the publish was skipped. The internal parameters dict WILL
-    # contain the parsed value (the rejection happens just before publish),
-    # but the side-effect we care about in integration is: no MQTT publish.
-    # Here we assert the guard detected it by checking the value is
-    # either not the garbage (early return) or is flagged somehow.
-    # Since the guard does `return` before publish, the stored value IS
-    # the garbage — but the test proves the branch is reachable. A stronger
-    # test would need a mocked pub.sendMessage; see test below.
-    assert parser.parameters["odo"]["value"] > 1_000_000
+    # The corrupt value is rejected AND the cache is rolled back to the
+    # previous good value, so it can never leak through a later publish
+    # triggered by another frame type.
+    assert parser.parameters["odo"]["value"] == 15026.0
 
 
 def test_corrupt_odo_skips_publish(parser, monkeypatch):
@@ -469,3 +463,40 @@ def test_get_scooter_off_status_getter(parser):
     assert parser.get_scooter_off_status() is True
     parser.scooter_off = False
     assert parser.get_scooter_off_status() is False
+
+
+# ---------------------------------------------------------------------------
+# Ghost-values fix: nothing decoded => nothing republished
+# ---------------------------------------------------------------------------
+
+def _capture_publishes(monkeypatch):
+    calls = []
+    import helpers.messageParser as mp
+    monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append(kw))
+    return calls
+
+
+def test_astra_er_frame_does_not_republish_cache(parser, monkeypatch):
+    """$RCAN,ER (CAN bus error) used to republish the ENTIRE stale cache and
+    refresh last-update — the source of 'ghost riding' telemetry while the
+    scooter sat parked with a faulty contactor."""
+    calls = _capture_publishes(monkeypatch)
+    parser.parse_message_from_scooter_protocol_astra(bytearray(b'$RCAN,ER\r\n'))
+    assert calls == []
+
+
+def test_astra_heartbeat_does_not_republish_cache(parser, monkeypatch):
+    calls = _capture_publishes(monkeypatch)
+    parser.parse_message_from_scooter_protocol_astra(
+        bytearray(b'$ASTRA;AT402;860000000000000;;7.0.61.35;Z;0\r\n'))
+    assert calls == []
+
+
+def test_astra_valid_cells_publish_only_decoded_keys(parser, monkeypatch):
+    calls = _capture_publishes(monkeypatch)
+    parser.parse_message_from_scooter_protocol_astra(
+        bytearray(b'$RCAN,185,08,5A,0E,5E,0E,64,0E,62,0E,OK\r\n'))
+    assert len(calls) == 1
+    published = calls[0]["scooter_status"]
+    assert set(published.keys()) == {"Cell1Voltage", "Cell2Voltage", "Cell3Voltage", "Cell4Voltage"}
+    assert published["Cell1Voltage"]["value"] == 0x0E5A

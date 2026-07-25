@@ -40,6 +40,11 @@ class MessageParser:
         if len(data) > 0:
             log.debug(f"Parse received message protocol Z from scooter: {data}")
 
+            # Remember the previous odo so a corrupt frame can be rolled back
+            # instead of leaving the poisoned value in the cache (it would
+            # leak on the next publish triggered by any other frame).
+            odo_prev = self.parameters.get("odo", {}).get("value")
+
             # Handle bundled Z frames: when RCAN polling slows the comm loop,
             # multiple Z sub-frames get buffered and read as one big frame.
             # Format: Z[len_hi][len_lo][count][sub0][sub1]...[checksum]
@@ -89,6 +94,9 @@ class MessageParser:
                     try:
                         if float(odo_val) > 1000000 or float(odo_val) < 0:
                             log.warning("Corrupt Z frame detected (odo=%s), skipping publish", odo_val)
+                            # Roll the cache back so the corrupt value cannot
+                            # leak through a later publish.
+                            self.parameters["odo"]["value"] = odo_prev
                             return
                     except (ValueError, TypeError):
                         pass
@@ -116,29 +124,50 @@ class MessageParser:
             try:
                 data = data.decode()
 
-                self._parse_extended_can(data)
+                updated_keys = set(self._parse_extended_can(data))
 
                 for parameter in self.RCAN_message_configuration:
                     if data[:len(self.RCAN_message_configuration[parameter]["header"])] == self.RCAN_message_configuration[parameter]["header"]:
                         byte_pos = self.RCAN_message_configuration[parameter]["message_byte_pos"]
                         positions = data.split(",")
                         combined_HEX = positions[byte_pos[1]] + positions[byte_pos[0]]
-                        self.parameters[parameter]["value"] = int(combined_HEX, 16)
+                        value = int(combined_HEX, 16)
+                        # Cell voltages are 16-bit raw values; anything outside
+                        # means a truncated/misaligned frame — never cache it.
+                        if 0 <= value <= 65535:
+                            self.parameters[parameter]["value"] = value
+                            updated_keys.add(parameter)
 
-                log.debug(f"Message protocol astra parsed: {self.parameters}")
-                pub.sendMessage(TOPIC_SCOOTER_STATUS, scooter_status = self.parameters)
+                if not updated_keys:
+                    # $RCAN,ER (bus CAN en erreur), heartbeat $ASTRA, trame
+                    # inconnue : RIEN n'a été décodé. Ne PAS republier le
+                    # cache : c'était la source des valeurs "fantômes" (un
+                    # scooter garé mais éveillé qui spamme ER faisait
+                    # republier vitesse/odo périmés + rafraîchir last-update
+                    # pendant des dizaines de minutes).
+                    log.debug("No parameter decoded from astra frame, cache not republished")
+                    return
+
+                updated = {k: self.parameters[k] for k in updated_keys if k in self.parameters}
+                log.debug(f"Message protocol astra parsed, publishing {sorted(updated_keys)}")
+                pub.sendMessage(TOPIC_SCOOTER_STATUS, scooter_status = updated)
 
             except Exception:
                 log.exception(f"Exception in handling message protocol astra {data}")
 
     def _parse_extended_can(self, data):
-        """Parse extended CAN data from $RCAN responses."""
+        """Parse extended CAN data from $RCAN responses.
+
+        Returns the list of parameter keys actually updated so the caller
+        can publish only fresh values (never the whole stale cache).
+        """
+        updated = []
         if not data.startswith("$RCAN,"):
-            return
+            return updated
 
         parts = data.strip().split(",")
         if len(parts) < 3:
-            return
+            return updated
 
         rcan_id = parts[1]
 
@@ -153,14 +182,17 @@ class MessageParser:
                 mode_map = {0: "OFF", 1: "ECO", 2: "SPORT", 3: "CITY"}
                 self.parameters["driveMode"]["value"] = mode_map.get(mode_bits, "UNKNOWN")
                 self.parameters["warningLights"]["value"] = int(byte1 & 0x01 != 0)
+                updated += ["driveReady", "sidestandDown", "driveMode", "warningLights"]
 
             # 0x300 - Range by current drive mode
             elif rcan_id == "300" and len(parts) >= 5:
                 self.parameters["rangeByMode"]["value"] = int(parts[4], 16)
+                updated.append("rangeByMode")
 
             # 0x182 - BMS flags
             elif rcan_id == "182" and len(parts) >= 4:
                 self.parameters["bmsFlags"]["value"] = int(parts[3], 16)
+                updated.append("bmsFlags")
 
             # parts layout: $RCAN,{ID},{len},{b0},{b1},{b2},{b3},{b4},{b5},{b6},{b7},OK
             #                  0     1    2    3    4    5    6    7    8    9    10   11
@@ -173,6 +205,7 @@ class MessageParser:
                 if current_raw > 32767:
                     current_raw -= 65536
                 self.parameters["bmsCurrent"]["value"] = round(current_raw / 10.0, 1)
+                updated.append("bmsCurrent")
 
             # 0x189 - Battery NTC temperatures (3 probes, bytes 2-7, /100 = celsius)
             elif rcan_id == "189" and len(parts) >= 11:
@@ -182,12 +215,14 @@ class MessageParser:
                 self.parameters["batteryNTC1"]["value"] = round(ntc1 / 100.0, 1)
                 self.parameters["batteryNTC2"]["value"] = round(ntc2 / 100.0, 1)
                 self.parameters["batteryNTC3"]["value"] = round(ntc3 / 100.0, 1)
+                updated += ["batteryNTC1", "batteryNTC2", "batteryNTC3"]
 
             # 0x391 - Motor RPM (bytes 4-5, unsigned LE)
             elif rcan_id == "391" and len(parts) >= 9:
                 b4 = int(parts[7], 16)
                 b5 = int(parts[8], 16)
                 self.parameters["motorRPM"]["value"] = b4 | (b5 << 8)
+                updated.append("motorRPM")
 
             # 0x381 - Motor power/torque (bytes 2-3, signed LE)
             elif rcan_id == "381" and len(parts) >= 7:
@@ -197,15 +232,19 @@ class MessageParser:
                 if power_raw > 32767:
                     power_raw -= 65536
                 self.parameters["motorPower"]["value"] = power_raw
+                updated.append("motorPower")
 
             # 0x371 - Votol bus voltage (bytes 6-7, unsigned LE, /10 = volts)
             elif rcan_id == "371" and len(parts) >= 11:
                 b6 = int(parts[9], 16)
                 b7 = int(parts[10], 16)
                 self.parameters["busVoltage"]["value"] = round((b6 | (b7 << 8)) / 10.0, 1)
+                updated.append("busVoltage")
 
         except (ValueError, IndexError, KeyError) as e:
             log.debug("Error parsing extended CAN %s: %s", rcan_id, e)
+
+        return updated
 
     def get_scooter_off_status(self):
         return self.scooter_off
