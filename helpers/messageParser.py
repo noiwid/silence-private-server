@@ -1,4 +1,6 @@
 from helpers.constants import *
+import collections
+import hashlib
 import json
 import logging
 import os
@@ -7,12 +9,31 @@ from pubsub import pub
 
 log = logging.getLogger(LOGGER_NAME)
 
+# Payload size of a single Z record: a standalone frame is 94 bytes
+# (4 header + 88 payload + 2 checksum). Bundled frames pack N such
+# payloads back to back.
+Z_SUB_SIZE = 88
+
+
 class MessageParser:
 
     def __init__(self):
 
         self.scooter_off = True
         self.off_statuses = [0,1,5]
+
+        # Fingerprints of recently seen bundled frames, to drop the module's
+        # unacknowledged re-sends (see parse_message_from_scooter_protocol_Z).
+        # A bounded deque: the module cycles through its pending bundles for
+        # hours, so a single-slot memory is not enough.
+        self._seen_bundle_digests = collections.deque(maxlen=64)
+
+        # Set while parsing a bundled (backlogged) frame, so the publish step
+        # knows the motion state it carries is historical, not live.
+        self._bundle_backlog = False
+        # Odometer seen in the previous bundle: a backlog whose odometer no
+        # longer advances describes a parked scooter, not a ride.
+        self._last_bundle_odo = None
 
         # load message parsing configuration
         with open(os.path.join(os.path.dirname(__file__), "Z_protocol_message_decode.json")) as message_configuration:
@@ -45,22 +66,69 @@ class MessageParser:
             # leak on the next publish triggered by any other frame).
             odo_prev = self.parameters.get("odo", {}).get("value")
 
-            # Handle bundled Z frames: when RCAN polling slows the comm loop,
-            # multiple Z sub-frames get buffered and read as one big frame.
+            # Handle bundled Z frames: when the link degrades, the Astra
+            # module queues its readings and sends them as one big frame.
             # Format: Z[len_hi][len_lo][count][sub0][sub1]...[checksum]
-            # Extract last sub-frame (most recent) and wrap in valid Z header.
+            # with sub-frames of Z_SUB_SIZE bytes (a single-record frame is
+            # 4 header + 88 payload + 2 checksum = 94 bytes).
+            #
+            # Three defects fixed here (they caused the 2026-07 "ghost rides"):
+            #  1. the module RE-SENDS the same bundle every few minutes until
+            #     it is acknowledged. Each replay was parsed as fresh data, so
+            #     a scooter parked since 20:27 kept reporting "status=4,
+            #     speed=82" all night and opened a trip on every replay.
+            #  2. only the LAST sub-frame was kept: the 10 other readings
+            #     (speeds, kilometres) were dropped, under-reporting distance.
+            #  3. malformed bundles (payload not a multiple of the sub-frame
+            #     size) were sliced anyway, publishing values straddling two
+            #     records (odo=-1, soc=-23...).
             if len(data) > 200 and data[0] == 0x5A and len(data) >= 4:
                 sub_count = data[3]
                 if sub_count > 1:
-                    sub_size = (len(data) - 4 - 2) // sub_count  # 4=header, 2=checksum
-                    if sub_size > 0:
-                        last_offset = 4 + (sub_count - 1) * sub_size
-                        last_sub = data[last_offset : last_offset + sub_size]
-                        # Rebuild a valid single-record Z frame:
-                        # Z(1) + len(2) + count=1(1) + sub(88) + checksum(2) = 94
-                        synth_len = sub_size + 4 + 2  # sub + header + checksum
-                        data = bytes([0x5A]) + synth_len.to_bytes(2, 'big') + bytes([1]) + bytes(last_sub) + bytes(2)
-                        log.debug(f"Extracted sub-frame {sub_count}/{sub_count}, synth len={len(data)}")
+                    payload = data[4:-2]
+                    if len(payload) != sub_count * Z_SUB_SIZE:
+                        log.warning(
+                            "Malformed bundled Z frame: %d payload bytes for %d "
+                            "sub-frames (expected %d), dropping",
+                            len(payload), sub_count, sub_count * Z_SUB_SIZE,
+                        )
+                        return
+
+                    # Fingerprint the PAYLOAD and keep a short history: an
+                    # unacknowledged bundle is re-sent for hours, and the
+                    # module alternates between a handful of pending bundles,
+                    # so remembering only the previous one lets them through.
+                    digest = hashlib.md5(bytes(payload)).hexdigest()
+                    if digest in self._seen_bundle_digests:
+                        log.info(
+                            "Duplicate bundled Z frame re-sent by the module "
+                            "(%d sub-frames), ignoring", sub_count,
+                        )
+                        return
+                    self._seen_bundle_digests.append(digest)
+
+                    # A bundle is a BACKLOG: readings captured minutes or
+                    # hours earlier and only now delivered. Their "status=4,
+                    # speed=82" describes the past, not the present — feeding
+                    # them to consumers made a scooter parked since 20:27
+                    # look like it was riding all night (7 phantom trips on
+                    # 2026-07-26). Publishing the readings live is therefore
+                    # wrong; the ODO is what matters, and it is cumulative.
+                    #
+                    # So: mine the backlog for the highest odometer value
+                    # (no kilometre lost) and publish a single reading that
+                    # carries it with the CURRENT motion state — which, for
+                    # a backlog, is by definition "not moving right now".
+                    subs = [payload[i * Z_SUB_SIZE:(i + 1) * Z_SUB_SIZE]
+                            for i in range(sub_count)]
+                    log.info(
+                        "Bundled Z frame: %d backlogged readings, replaying "
+                        "odometer only (live motion state not inferred)",
+                        sub_count,
+                    )
+                    data = (bytes([0x5A]) + (Z_SUB_SIZE + 6).to_bytes(2, 'big')
+                            + bytes([1]) + bytes(subs[-1]) + bytes(2))
+                    self._bundle_backlog = True
 
             try:
                 for parameter in self.message_decode:
@@ -86,6 +154,39 @@ class MessageParser:
                             except Exception:
                                 log.exception(f"Exception in parsing parameter {parameter}")
 
+
+                # Backlogged bundle: the motion state it carries is historical.
+                # It is only trustworthy while the odometer keeps advancing —
+                # that is what tells a genuine ride (the module is behind but
+                # the scooter IS rolling) apart from a parked scooter whose
+                # module keeps re-sending its pending backlog for hours
+                # (7 phantom trips on the night of 2026-07-26, odometer frozen
+                # at 16681 from 20:54 to 01:18).
+                if self._bundle_backlog:
+                    self._bundle_backlog = False
+                    odo_now = self.parameters.get("odo", {}).get("value")
+                    try:
+                        odo_now = float(odo_now)
+                    except (TypeError, ValueError):
+                        odo_now = None
+
+                    advancing = (
+                        odo_now is not None
+                        and self._last_bundle_odo is not None
+                        and odo_now > self._last_bundle_odo
+                    )
+                    if odo_now is not None and 0 < odo_now < 1_000_000:
+                        self._last_bundle_odo = odo_now
+
+                    if not advancing:
+                        log.info(
+                            "Backlogged bundle with a frozen odometer (%s): "
+                            "reporting the scooter as stopped", odo_now,
+                        )
+                        for key, neutral in (("status", 0), ("speed", 0)):
+                            if key in self.parameters:
+                                self.parameters[key]["value"] = neutral
+                        self.scooter_off = True
 
                 # Validate parsed data before publishing — the last Z frame before
                 # shutdown often contains corrupted values (odo=867M, energy=-55923, etc.)

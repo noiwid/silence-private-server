@@ -12,7 +12,9 @@ Real raw frames captured from a SEAT Mo 125 with the Astra AT402 v7.0.61.35
 telematics module are used where possible.
 """
 import pytest
+from unittest.mock import patch
 
+import helpers.messageParser as mp
 from helpers.messageParser import MessageParser
 
 
@@ -289,30 +291,74 @@ def test_normal_z_frame_not_touched_by_debundler(parser):
     assert parser.parameters["status"]["value"] == 4
 
 
-@pytest.mark.parametrize("sub_count", [3, 5, 7, 11])
-def test_bundled_frame_extracts_last_subframe(parser, sub_count):
-    # The debundler only kicks in for frames > 200 bytes. Real-world
-    # captures showed 2-11 sub-records per frame depending on how much
-    # $RCAN polling delayed the comm loop. Verify the math holds for
-    # representative sub_count values (2 gives 182 bytes, below the
-    # 200-byte threshold, so not debundled; 3 is the minimum that
-    # triggers the code path).
-    sub_size = 88
+def _bundle(sub_count, status=4, odo=None, sub_size=88):
+    """Build a bundled Z frame of `sub_count` records."""
     total_len = 4 + sub_count * sub_size + 2
-
     frame = bytearray(total_len)
     frame[0] = 0x5A
     frame[1] = (total_len >> 8) & 0xFF
     frame[2] = total_len & 0xFF
     frame[3] = sub_count
-
-    # All but the last sub have status=3 at offset (82 - 4) = 78.
-    # The last sub — which the debundler must extract — has status=4.
     for i in range(sub_count):
-        frame[4 + i * sub_size + 78] = 3 if i < sub_count - 1 else 4
+        base = 4 + i * sub_size
+        # status lives at byte 82 of a standalone frame -> offset 78 in a sub
+        frame[base + 78] = 3 if i < sub_count - 1 else status
+        if odo is not None:
+            # odo occupies bytes 83-86 of a standalone frame -> 79-82 in a sub
+            frame[base + 79: base + 83] = int(odo).to_bytes(4, "big")
+    return bytes(frame)
 
-    parser.parse_message_from_scooter_protocol_Z(bytes(frame))
+
+@pytest.mark.parametrize("sub_count", [3, 5, 7, 11])
+def test_bundled_frame_with_advancing_odo_keeps_motion(parser, sub_count):
+    # A bundle is a BACKLOG. While the odometer keeps advancing the scooter
+    # really is riding (the module is just late), so the motion state of the
+    # most recent record must be preserved.
+    parser.parse_message_from_scooter_protocol_Z(_bundle(sub_count, odo=16000))
+    parser.parse_message_from_scooter_protocol_Z(_bundle(sub_count, odo=16005))
     assert parser.parameters["status"]["value"] == 4
+
+
+@pytest.mark.parametrize("sub_count", [3, 11])
+def test_bundled_frame_with_frozen_odo_reports_stopped(parser, sub_count):
+    """Regression test for the 2026-07-26 phantom trips.
+
+    A parked scooter whose module re-sends its pending backlog for hours
+    (odometer frozen) must NOT be reported as riding: each replay used to
+    publish status=4/speed=82 and opened a trip in Home Assistant.
+    """
+    parser.parse_message_from_scooter_protocol_Z(_bundle(sub_count, odo=16681))
+    # same odometer, different payload -> not caught by the dedup, but the
+    # frozen odometer proves the readings are stale
+    parser.parse_message_from_scooter_protocol_Z(
+        _bundle(sub_count, status=3, odo=16681))
+    assert parser.parameters["status"]["value"] == 0
+    assert parser.parameters["speed"]["value"] == 0
+
+
+def test_bundled_frame_resent_is_ignored(parser):
+    """The module re-sends an unacknowledged bundle every few minutes."""
+    frame = _bundle(11, odo=16700)
+    parser.parse_message_from_scooter_protocol_Z(frame)
+    calls = []
+    with patch.object(mp.pub, "sendMessage", side_effect=lambda *a, **k: calls.append(k)):
+        parser.parse_message_from_scooter_protocol_Z(frame)
+        parser.parse_message_from_scooter_protocol_Z(frame)
+    assert calls == []
+
+
+def test_malformed_bundle_is_dropped(parser):
+    """Payload not a multiple of the sub-frame size: slicing it would emit
+    values straddling two records (odo=-1, soc=-23 seen in production)."""
+    frame = bytearray(_bundle(11, odo=16000))
+    frame = frame[:-5]                      # truncate: payload no longer 11x88
+    frame[1] = (len(frame) >> 8) & 0xFF
+    frame[2] = len(frame) & 0xFF
+    parser.parameters["odo"]["value"] = 16000.0
+    calls = []
+    with patch.object(mp.pub, "sendMessage", side_effect=lambda *a, **k: calls.append(k)):
+        parser.parse_message_from_scooter_protocol_Z(bytes(frame))
+    assert calls == []
 
 
 def test_bundled_frame_with_sub_count_one_is_not_debundled(parser):
@@ -382,7 +428,6 @@ def test_corrupt_odo_value_is_rejected(parser):
 def test_corrupt_odo_skips_publish(parser, monkeypatch):
     """Strong version: verify pub.sendMessage is NOT called on corrupt frame."""
     calls = []
-    import helpers.messageParser as mp
     monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append((a, kw)))
 
     parser.scooter_off = False
@@ -411,7 +456,6 @@ def test_corrupt_odo_skips_publish(parser, monkeypatch):
 def test_valid_odo_does_publish(parser, monkeypatch):
     """Positive control: a frame with a plausible odo DOES publish."""
     calls = []
-    import helpers.messageParser as mp
     monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append((a, kw)))
 
     parser.scooter_off = False
@@ -471,7 +515,6 @@ def test_get_scooter_off_status_getter(parser):
 
 def _capture_publishes(monkeypatch):
     calls = []
-    import helpers.messageParser as mp
     monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append(kw))
     return calls
 
