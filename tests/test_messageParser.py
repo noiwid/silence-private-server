@@ -309,7 +309,7 @@ def _bundle(sub_count, status=4, odo=None, sub_size=88):
     return bytes(frame)
 
 
-@pytest.mark.parametrize("sub_count", [3, 5, 7, 11])
+@pytest.mark.parametrize("sub_count", [2, 3, 5, 7, 11])
 def test_bundled_frame_with_advancing_odo_keeps_motion(parser, sub_count):
     # A bundle is a BACKLOG. While the odometer keeps advancing the scooter
     # really is riding (the module is just late), so the motion state of the
@@ -319,7 +319,7 @@ def test_bundled_frame_with_advancing_odo_keeps_motion(parser, sub_count):
     assert parser.parameters["status"]["value"] == 4
 
 
-@pytest.mark.parametrize("sub_count", [3, 11])
+@pytest.mark.parametrize("sub_count", [2, 3, 11])
 def test_bundled_frame_with_frozen_odo_reports_stopped(parser, sub_count):
     """Regression test for the 2026-07-26 phantom trips.
 
@@ -334,6 +334,21 @@ def test_bundled_frame_with_frozen_odo_reports_stopped(parser, sub_count):
         _bundle(sub_count, status=3, odo=16681))
     assert parser.parameters["status"]["value"] == 0
     assert parser.parameters["speed"]["value"] == 0
+
+
+def test_two_record_bundle_is_detected(parser):
+    """182-byte dual-record bundle (upstream v2026.9.9 regression case).
+
+    The old `len > 200` check let it through as a normal frame: the decode
+    config knows no 182-byte layout, so the packet was silently dropped and
+    its kilometres lost. Detection now relies on the table of valid
+    single-frame lengths."""
+    frame = _bundle(2, odo=16000)
+    assert len(frame) == 182
+    parser.parse_message_from_scooter_protocol_Z(frame)
+    parser.parse_message_from_scooter_protocol_Z(_bundle(2, odo=16005))
+    assert parser.parameters["odo"]["value"] == 16005.0
+    assert parser.parameters["status"]["value"] == 4
 
 
 def test_bundled_frame_resent_is_ignored(parser):
@@ -383,7 +398,7 @@ def test_bundled_frame_degenerate_sub_count_does_not_crash(parser):
     # Attacker / malformed input: sub_count too high for the payload,
     # leading to `sub_size = (len - 4 - 2) // sub_count = 0`. The guard
     # `if sub_size > 0` must prevent any slice manipulation.
-    total_len = 250  # > 200 so we enter the debundling branch
+    total_len = 250  # not a known single-frame length -> debundling branch
     frame = bytearray(total_len)
     frame[0] = 0x5A
     frame[1] = (total_len >> 8) & 0xFF
@@ -543,3 +558,87 @@ def test_astra_valid_cells_publish_only_decoded_keys(parser, monkeypatch):
     published = calls[0]["scooter_status"]
     assert set(published.keys()) == {"Cell1Voltage", "Cell2Voltage", "Cell3Voltage", "Cell4Voltage"}
     assert published["Cell1Voltage"]["value"] == 0x0E5A
+
+
+# ---------------------------------------------------------------------------
+# $STMS snapshot frame (SYNC command response)
+# ---------------------------------------------------------------------------
+
+STMS_FRAME = (
+    b"$STMS,0,82,25,24,556,0,435036987,0,0,330,330,0,109,0,"
+    b"1193553,101673,1158504,22,89340760000000000000,+34600000000,"
+    b"UCYS1234567890123\r\n"
+)
+
+
+def test_stms_frame_decodes_snapshot_fields(parser):
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    p = parser.parameters
+    assert p["batterySOC"]["value"] == 82
+    assert p["batteryTempMax"]["value"] == 25
+    assert p["batteryTempMin"]["value"] == 24
+    assert p["batteryVoltage"]["value"] == 55.6
+    assert p["range"]["value"] == 109
+    assert p["chargedEnergy"]["value"] == pytest.approx(331.5425)
+    assert p["RegeneratedEnergy"]["value"] == pytest.approx(28.2425)
+    assert p["DischargedEnergy"]["value"] == pytest.approx(321.8067, abs=1e-4)
+    assert p["ambientTemp"]["value"] == 22
+    assert p["VIN"]["value"] == "UCYS1234567890123"
+
+
+def test_stms_publishes_status(parser, monkeypatch):
+    calls = []
+    import helpers.messageParser as mp
+    monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append((a, kw)))
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    assert len(calls) == 1
+
+
+def test_stms_leaves_unidentified_fields_untouched(parser):
+    # $STMS does not carry odo (field 7 is an unrelated large counter);
+    # an odo previously read from Z telemetry must survive a snapshot.
+    parser.parameters["odo"]["value"] = 6345.0
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    assert parser.parameters["odo"]["value"] == 6345.0
+
+
+def test_stms_rejects_implausible_vin(parser):
+    # A truncated/garbled last field must not overwrite a known-good VIN.
+    parser.parameters["VIN"]["value"] = "UCYS_KNOWN_GOOD00"
+    frame = STMS_FRAME.replace(b"UCYS1234567890123", b"GARBLED")
+    parser.parse_message_from_scooter_protocol_astra(frame)
+    assert parser.parameters["VIN"]["value"] == "UCYS_KNOWN_GOOD00"
+
+
+def test_stms_undecodable_frame_does_not_publish(parser, monkeypatch):
+    calls = []
+    import helpers.messageParser as mp
+    monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append((a, kw)))
+    parser.parse_message_from_scooter_protocol_astra(b"$STMS,,\r\n")
+    assert calls == []
+
+
+def test_stms_publishes_only_decoded_keys(parser, monkeypatch):
+    """Same contract as $RCAN: no republication of the whole cache."""
+    calls = []
+    monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append(kw))
+    parser.parameters["odo"]["value"] = 6345.0
+    parser.parameters["speed"]["value"] = 82
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    assert len(calls) == 1
+    published = calls[0]["scooter_status"]
+    assert "batterySOC" in published and "VIN" in published
+    assert "odo" not in published and "speed" not in published
+
+
+def test_stms_does_not_touch_status(parser, monkeypatch):
+    """Field 1 semantics are unknown (single parked capture = 0): a SYNC
+    requested while riding must not stop the trip in Home Assistant."""
+    calls = []
+    monkeypatch.setattr(mp.pub, "sendMessage", lambda *a, **kw: calls.append(kw))
+    parser.parameters["status"]["value"] = 4
+    parser.scooter_off = False
+    parser.parse_message_from_scooter_protocol_astra(STMS_FRAME)
+    assert parser.parameters["status"]["value"] == 4
+    assert parser.scooter_off is False
+    assert "status" not in calls[0]["scooter_status"]

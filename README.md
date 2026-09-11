@@ -5,8 +5,8 @@
 This is a self-hosted server solution for interfacing with the Astra GPS module of Silence and Seat electric scooters.\
 This project empowers owners to maintain control over their data, ensuring **privacy** and **independence** from the manufacturer.
 
-This project was developed initially and primarily by [**Andrea Gasparini**](https://www.linkedin.com/in/andrea-gasparini-a14824143) @88gaspa88 (88gaspa88@gmail.com).\
-We also thank the technical contributions on the [Elektroroller forum](https://www.elektroroller-forum.de/viewforum.php?f=128)
+This project was started by a draft idea of [**Andrea Gasparini**](https://www.linkedin.com/in/andrea-gasparini-a14824143) @88gaspa88 (88gaspa88@gmail.com).\
+I also thank technical contributions on the [Elektroroller forum](https://www.elektroroller-forum.de/viewforum.php?f=128)
 
 If you like this project you can support me with :coffee: , with **GitHub Sponsor** or simply put a :star: to this repository :blush:
 

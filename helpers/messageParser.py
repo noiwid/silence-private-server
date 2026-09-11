@@ -45,6 +45,14 @@ class MessageParser:
         with open(os.path.join(os.path.dirname(__file__), "RCAN_definition.json")) as RCAN_message_configuration:
             self.RCAN_message_configuration = json.load(RCAN_message_configuration)
 
+        # Valid single-frame lengths derived from decode config — used to detect bundled frames.
+        self._valid_z_lengths = {
+            l
+            for p in self.message_decode.values()
+            for mt in p["message_type"]
+            for l in mt["message_lenght"]
+        }
+
         # Fields populated by extended CAN polling (_parse_extended_can).
         # These are reset to "None" when the scooter is off so consumers
         # don't see stale values (e.g. RPM=1341, driveMode=SPORT while
@@ -82,7 +90,12 @@ class MessageParser:
             #  3. malformed bundles (payload not a multiple of the sub-frame
             #     size) were sliced anyway, publishing values straddling two
             #     records (odo=-1, soc=-23...).
-            if len(data) > 200 and data[0] == 0x5A and len(data) >= 4:
+            #
+            # Detection: any Z frame whose length is not a known single-frame
+            # size (table built from the decode config), instead of the old
+            # `len > 200` test that silently dropped 182-byte dual-record
+            # bundles (upstream fix, v2026.9.9).
+            if data[0] == 0x5A and len(data) >= 4 and len(data) not in self._valid_z_lengths:
                 sub_count = data[3]
                 if sub_count > 1:
                     payload = data[4:-2]
@@ -225,6 +238,13 @@ class MessageParser:
             try:
                 data = data.decode()
 
+                # $STMS snapshot frame (forced sync via the SYNC command).
+                # Full status in one CSV line; decoded separately because the
+                # field layout differs entirely from $RCAN.
+                if data.startswith("$STMS,"):
+                    self._parse_stms(data)
+                    return
+
                 updated_keys = set(self._parse_extended_can(data))
 
                 for parameter in self.RCAN_message_configuration:
@@ -255,6 +275,81 @@ class MessageParser:
 
             except Exception:
                 log.exception(f"Exception in handling message protocol astra {data}")
+
+    def _parse_stms(self, data):
+        """Decode a $STMS snapshot frame and publish scooter status.
+
+        Field indices reverse-engineered then cross-checked against live
+        Z-protocol telemetry from the same scooter:
+          SOC=82, Vbat=55.6 (556/10), Tmax=25, Tmin=24, range=109,
+          charged=331.5425 (1193553/3600), regen=28.2425 (101673/3600),
+          discharged=321.8067 (1158504/3600), VIN=UCYSxxxxxxxxxxxxx (17 chars).
+
+        Example frame:
+          $STMS,0,82,25,24,556,0,435036987,0,0,330,330,0,109,0,
+                1193553,101673,1158504,22,<ICCID>,<phone>,<VIN>
+
+        Indices 7 (large counter), 8-12 and 14 are unidentified and left
+        untouched so they don't clobber good Z data — notably odo, which
+        $STMS does not carry (Z odo=6345 km != field 7).
+        """
+        parts = data.strip().split(",")
+
+        # (csv_index, parameter_key, divider)
+        #
+        # Index 1 is NOT mapped to "status" on purpose: its semantics are only
+        # documented by a single parked-scooter capture (value 0). A SYNC
+        # requested from the official app while riding would otherwise publish
+        # status=0 and stop the trip in Home Assistant. Motion state stays
+        # owned by the Z protocol frames.
+        numeric_fields = [
+            (2, "batterySOC", 1),
+            (3, "batteryTempMax", 1),
+            (4, "batteryTempMin", 1),
+            (5, "batteryVoltage", 10),
+            (6, "batteryCurrent", 10),
+            (13, "range", 1),
+            (15, "chargedEnergy", 3600),
+            (16, "RegeneratedEnergy", 3600),
+            (17, "DischargedEnergy", 3600),
+            (18, "ambientTemp", 1),
+        ]
+
+        # Same contract as the $RCAN path: only the keys actually decoded
+        # from THIS frame are published. Republishing the whole cache was the
+        # root cause of the 2026-07 "ghost telemetry" (stale speed/odo
+        # re-emitted on every frame).
+        updated_keys = set()
+        for index, key, divider in numeric_fields:
+            if index >= len(parts):
+                continue
+            raw = parts[index].strip()
+            if raw == "":
+                continue
+            try:
+                self.parameters[key]["value"] = int(raw) / divider
+                updated_keys.add(key)
+            except (ValueError, KeyError):
+                log.debug("STMS: cannot parse %s (index %s) value %r", key, index, raw)
+
+        # VIN is the last CSV field; sanity-check it looks like a Silence VIN
+        # before trusting it (guards against a truncated/garbled frame).
+        if len(parts) >= 2:
+            vin = parts[-1].strip()
+            if vin.startswith("UCYS") and len(vin) >= 10:
+                try:
+                    self.parameters["VIN"]["value"] = vin
+                    updated_keys.add("VIN")
+                except KeyError:
+                    pass
+
+        if not updated_keys:
+            log.warning("STMS frame had no decodable fields: %s", data)
+            return
+
+        updated = {k: self.parameters[k] for k in updated_keys if k in self.parameters}
+        log.debug(f"Message $STMS parsed, publishing {sorted(updated_keys)}")
+        pub.sendMessage(TOPIC_SCOOTER_STATUS, scooter_status=updated)
 
     def _parse_extended_can(self, data):
         """Parse extended CAN data from $RCAN responses.
