@@ -291,8 +291,13 @@ def test_normal_z_frame_not_touched_by_debundler(parser):
     assert parser.parameters["status"]["value"] == 4
 
 
-def _bundle(sub_count, status=4, odo=None, sub_size=88):
-    """Build a bundled Z frame of `sub_count` records."""
+def _bundle(sub_count, status=4, odo=None, sub_size=88, speed=None):
+    """Build a bundled Z frame of `sub_count` records.
+
+    `speed` (byte 63 of a standalone frame -> offset 59 in a sub) lets two
+    bundles with the same status and odometer carry different payloads, so
+    they are not swallowed by the digest dedup before reaching the guard.
+    """
     total_len = 4 + sub_count * sub_size + 2
     frame = bytearray(total_len)
     frame[0] = 0x5A
@@ -306,6 +311,8 @@ def _bundle(sub_count, status=4, odo=None, sub_size=88):
         if odo is not None:
             # odo occupies bytes 83-86 of a standalone frame -> 79-82 in a sub
             frame[base + 79: base + 83] = int(odo).to_bytes(4, "big")
+        if speed is not None:
+            frame[base + 59] = int(speed) & 0xFF
     return bytes(frame)
 
 
@@ -320,20 +327,58 @@ def test_bundled_frame_with_advancing_odo_keeps_motion(parser, sub_count):
 
 
 @pytest.mark.parametrize("sub_count", [2, 3, 11])
-def test_bundled_frame_with_frozen_odo_reports_stopped(parser, sub_count):
+def test_bundled_frame_with_frozen_odo_reports_stopped(parser, sub_count, monkeypatch):
     """Regression test for the 2026-07-26 phantom trips.
 
     A parked scooter whose module re-sends its pending backlog for hours
     (odometer frozen) must NOT be reported as riding: each replay used to
     publish status=4/speed=82 and opened a trip in Home Assistant.
     """
+    clock = [1000.0]
+    monkeypatch.setattr(mp, "_monotonic", lambda: clock[0])
     parser.parse_message_from_scooter_protocol_Z(_bundle(sub_count, odo=16681))
-    # same odometer, different payload -> not caught by the dedup, but the
-    # frozen odometer proves the readings are stale
-    parser.parse_message_from_scooter_protocol_Z(
-        _bundle(sub_count, status=3, odo=16681))
+    # same odometer, different payloads -> not caught by the dedup; the
+    # odometer frozen for longer than the grace period proves the readings
+    # are stale (the module alternated between pending bundles all night)
+    clock[0] += 120
+    parser.parse_message_from_scooter_protocol_Z(_bundle(sub_count, status=4, odo=16681, speed=82))
+    assert parser.parameters["status"]["value"] == 4      # still within the grace period
+    clock[0] += mp.FROZEN_ODO_GRACE_SECONDS + 60
+    parser.parse_message_from_scooter_protocol_Z(_bundle(sub_count, status=4, odo=16681, speed=81))
     assert parser.parameters["status"]["value"] == 0
     assert parser.parameters["speed"]["value"] == 0
+
+
+def test_frozen_odo_within_grace_keeps_motion(parser, monkeypatch):
+    """Regression test for the 2026-09-14 commute.
+
+    On a degraded link the module bundles everything (974-byte frames every
+    few seconds). At a red light two or three consecutive bundles carry the
+    same 1 km-resolution odometer while the scooter is genuinely riding
+    (status=4 in every sub-record). Forcing status=0 on the first frozen
+    bundle turned every red light into a pause and the trip into
+    '4 km in 2 min at 120 km/h'."""
+    clock = [5000.0]
+    monkeypatch.setattr(mp, "_monotonic", lambda: clock[0])
+    parser.parse_message_from_scooter_protocol_Z(_bundle(11, odo=17219, speed=54))
+    for step, speed in ((6, 30), (3, 0), (40, 0), (60, 12)):   # same km, red light
+        clock[0] += step
+        parser.parse_message_from_scooter_protocol_Z(_bundle(11, status=4, odo=17219, speed=speed))
+        assert parser.parameters["status"]["value"] == 4
+        assert parser.scooter_off is False
+
+
+def test_frozen_clock_resets_when_odo_advances(parser, monkeypatch):
+    clock = [9000.0]
+    monkeypatch.setattr(mp, "_monotonic", lambda: clock[0])
+    parser.parse_message_from_scooter_protocol_Z(_bundle(3, odo=100, speed=40))
+    clock[0] += mp.FROZEN_ODO_GRACE_SECONDS - 30      # frozen, still in grace
+    parser.parse_message_from_scooter_protocol_Z(_bundle(3, status=4, odo=100, speed=41))
+    clock[0] += 10
+    parser.parse_message_from_scooter_protocol_Z(_bundle(3, status=4, odo=101, speed=42))   # advances -> reset
+    clock[0] += mp.FROZEN_ODO_GRACE_SECONDS - 30      # frozen again but the clock restarted
+    parser.parse_message_from_scooter_protocol_Z(_bundle(3, status=4, odo=101, speed=43))
+    assert parser.parameters["status"]["value"] == 4
 
 
 def test_two_record_bundle_is_detected(parser):

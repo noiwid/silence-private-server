@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 
 from pubsub import pub
 
@@ -13,6 +14,20 @@ log = logging.getLogger(LOGGER_NAME)
 # (4 header + 88 payload + 2 checksum). Bundled frames pack N such
 # payloads back to back.
 Z_SUB_SIZE = 88
+
+# A backlogged bundle whose odometer has not advanced is only declared
+# "parked" once the odometer has been frozen for this long. The odometer
+# has a 1 km resolution: at a red light or in a traffic jam consecutive
+# bundles legitimately carry the same value for a couple of minutes
+# (2026-09-14: every red light of a real ride was published as status=0,
+# splitting the trip into 'pauses' and yielding a 120 km/h average).
+# The 2026-07-26 phantom replays, by contrast, stayed frozen for hours.
+FROZEN_ODO_GRACE_SECONDS = 300
+
+
+def _monotonic():
+    """Wall-clock source, isolated so tests can drive it."""
+    return time.monotonic()
 
 
 class MessageParser:
@@ -34,6 +49,9 @@ class MessageParser:
         # Odometer seen in the previous bundle: a backlog whose odometer no
         # longer advances describes a parked scooter, not a ride.
         self._last_bundle_odo = None
+        # When the odometer first stopped advancing across bundles (see
+        # FROZEN_ODO_GRACE_SECONDS); None while it is advancing.
+        self._odo_frozen_since = None
 
         # load message parsing configuration
         with open(os.path.join(os.path.dirname(__file__), "Z_protocol_message_decode.json")) as message_configuration:
@@ -188,13 +206,28 @@ class MessageParser:
                         and self._last_bundle_odo is not None
                         and odo_now > self._last_bundle_odo
                     )
+                    first_bundle = self._last_bundle_odo is None
                     if odo_now is not None and 0 < odo_now < 1_000_000:
                         self._last_bundle_odo = odo_now
 
-                    if not advancing:
+                    # A frozen odometer between two bundles is normal while
+                    # riding (1 km resolution, red lights, traffic): only a
+                    # freeze longer than FROZEN_ODO_GRACE_SECONDS proves the
+                    # readings are a stale replay of a parked scooter.
+                    now = _monotonic()
+                    if advancing or first_bundle:
+                        self._odo_frozen_since = None
+                    elif self._odo_frozen_since is None:
+                        self._odo_frozen_since = now
+
+                    frozen_for = (
+                        now - self._odo_frozen_since
+                        if self._odo_frozen_since is not None else 0.0
+                    )
+                    if frozen_for > FROZEN_ODO_GRACE_SECONDS:
                         log.info(
-                            "Backlogged bundle with a frozen odometer (%s): "
-                            "reporting the scooter as stopped", odo_now,
+                            "Backlogged bundle with an odometer frozen for %.0f s (%s): "
+                            "reporting the scooter as stopped", frozen_for, odo_now,
                         )
                         for key, neutral in (("status", 0), ("speed", 0)):
                             if key in self.parameters:
